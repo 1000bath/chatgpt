@@ -1,0 +1,46 @@
+{
+  "name": "dek-chatgpt",
+  "version": "0.1.0",
+  "description": "Drive ChatGPT's web UI over the Chrome DevTools Protocol — streaming responses, image uploads, composer tools, and account Saved Memory. No API key, no puppeteer, zero runtime dependencies (Node 24 built-ins only).",
+  "keywords": [
+    "chatgpt",
+    "cdp",
+    "chrome-devtools-protocol",
+    "browser-automation",
+    "llm",
+    "saved-memory",
+    "typescript"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/1000bath/dek-chatgpt.git"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./*": "./dist/*.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run src"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "typescript": "^6.0.0",
+    "vitest": "^4.1.0"
+  }
+}
