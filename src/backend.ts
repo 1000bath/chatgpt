@@ -392,21 +392,23 @@ export class ChatGptBrowserBackend implements ExecutionBackend {
       const outputTokens = streamUsage?.completionTokens ?? estimateTokens(text);
 
       return {
-        responseId,
         text,
-        // Only a checked write counts as saved; an unverifiable one is reported
-        // through accountMemoryVerification instead of being claimed as success.
-        accountMemorySaved: request.accountMemory
-          ? memoryVerification === "verified"
-          : undefined,
-        accountMemoryVerification: request.accountMemory ? memoryVerification : undefined,
-        images: images.length > 0 ? images : undefined,
-        artifactWarnings: captured.warnings.length > 0 ? captured.warnings : undefined,
         usage: {
           inputTokens: inputTokens + memoryInputTokens,
           outputTokens: outputTokens + memoryOutputTokens,
           totalTokens: inputTokens + outputTokens + memoryInputTokens + memoryOutputTokens
-        }
+        },
+        ...(responseId ? { responseId } : {}),
+        // Only a checked write counts as saved; an unverifiable one is reported
+        // through accountMemoryVerification instead of being claimed as success.
+        ...(request.accountMemory
+          ? {
+              accountMemorySaved: memoryVerification === "verified",
+              accountMemoryVerification: memoryVerification
+            }
+          : {}),
+        ...(images.length > 0 ? { images } : {}),
+        ...(captured.warnings.length > 0 ? { artifactWarnings: captured.warnings } : {})
       };
     } catch (err) {
       let screenshotPath: string | undefined;

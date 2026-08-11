@@ -57,13 +57,19 @@ export class CdpSession implements CdpClient {
 
   async connect(timeoutMs = 10_000): Promise<void> {
     return new Promise((resolve, reject) => {
+      let settled = false;
       const timer = setTimeout(() => {
-        reject(new Error(`WebSocket connection to ${this.ws.url} timed out`));
+        settle(() => reject(new Error(`WebSocket connection to ${this.ws.url} timed out`)));
       }, timeoutMs);
+      const settle = (complete: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        complete();
+      };
 
       this.ws.addEventListener("open", () => {
-        clearTimeout(timer);
-        resolve();
+        settle(resolve);
       });
 
       this.ws.addEventListener("message", (event) => {
@@ -100,7 +106,6 @@ export class CdpSession implements CdpClient {
       });
 
       this.ws.addEventListener("error", (event) => {
-        clearTimeout(timer);
         // The WHATWG error event carries no Error of its own the way `ws`'
         // EventEmitter did, so recover the underlying cause when the runtime
         // exposes it and fall back to a generic connection failure.
@@ -109,11 +114,13 @@ export class CdpSession implements CdpClient {
           ? cause
           : new Error(`Chrome DevTools connection to ${this.ws.url} failed.`);
         this.rejectPending(error);
-        reject(error);
+        settle(() => reject(error));
       });
 
       this.ws.addEventListener("close", () => {
-        this.rejectPending(new Error("Chrome DevTools connection closed."));
+        const error = new Error(`Chrome DevTools connection to ${this.ws.url} closed.`);
+        this.rejectPending(error);
+        settle(() => reject(error));
       });
     });
   }
@@ -131,7 +138,7 @@ export class CdpSession implements CdpClient {
       const id = ++this.messageId;
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`CDP command ${method} timed out after ${timeoutMs}ms.`));
+        reject(new Error(`CDP command ${method} timed out after ${timeoutMs}ms on ${this.ws.url}.`));
       }, timeoutMs);
       this.pending.set(id, {
         resolve: (value) => resolve(value as T),

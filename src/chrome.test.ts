@@ -1,8 +1,10 @@
 import fs from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { conversationLockKey, withConversationLock, withLaunchLock } from "./chrome.js";
+import { conversationLockKey, fetchJson, withConversationLock, withLaunchLock } from "./chrome.js";
 
 let profileDir: string;
 
@@ -161,3 +163,76 @@ describe("conversationLockKey", () => {
       .not.toBe(conversationLockKey("https://chatgpt.com/c/bbbb"));
   });
 });
+
+describe("fetchJson", () => {
+  test("retries transient GET failures before returning parsed JSON", async () => {
+    let attempts = 0;
+    const server = http.createServer((_req, res) => {
+      attempts += 1;
+      if (attempts === 1) {
+        res.writeHead(503, { "content-type": "text/plain" });
+        res.end("starting");
+        return;
+      }
+      if (attempts === 2) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end("{");
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await listen(server);
+    try {
+      const { port } = server.address() as AddressInfo;
+      await expect(
+        fetchJson<{ ok: boolean }>(`http://127.0.0.1:${port}/json/version`, 500, "GET", {
+          retryDelayMs: 1
+        })
+      ).resolves.toEqual({ ok: true });
+      expect(attempts).toBe(3);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  test("does not retry mutating PUT calls", async () => {
+    let attempts = 0;
+    const server = http.createServer((_req, res) => {
+      attempts += 1;
+      res.writeHead(503, { "content-type": "text/plain" });
+      res.end("busy");
+    });
+    await listen(server);
+    try {
+      const { port } = server.address() as AddressInfo;
+      await expect(
+        fetchJson(`http://127.0.0.1:${port}/json/new`, 500, "PUT", {
+          retryDelayMs: 1
+        })
+      ).rejects.toThrow(/503/);
+      expect(attempts).toBe(1);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+function listen(server: http.Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+}
+
+function closeServer(server: http.Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}

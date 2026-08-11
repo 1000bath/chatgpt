@@ -149,7 +149,7 @@ export interface ChatGptStreamReaderOptions {
 }
 
 export class ChatGptStreamReader {
-  private unsubscribe?: () => void;
+  private unsubscribe: (() => void) | undefined;
   private requestId?: string;
   private readonly parser = new SseFrameParser();
   private readonly completion: Promise<ChatGptStreamResult>;

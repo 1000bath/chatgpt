@@ -8,6 +8,16 @@ import type { ChatGptBrowserConfig, ChromeProcessInfo, ChromeTarget } from "./ty
 import { CdpSession } from "./response.js";
 
 const execFileAsync = promisify(execFile);
+const DEFAULT_CDP_HTTP_ATTEMPTS = 3;
+
+interface FetchJsonOptions {
+  attempts?: number;
+  retryDelayMs?: number;
+}
+
+interface HttpStatusError extends Error {
+  statusCode: number;
+}
 
 export async function findChromeExecutable(): Promise<string | null> {
   if (process.platform === "darwin") {
@@ -60,7 +70,25 @@ export async function findChromeExecutable(): Promise<string | null> {
 export function fetchJson<T>(
   url: string,
   timeoutMs = 2000,
-  method: "GET" | "PUT" = "GET"
+  method: "GET" | "PUT" = "GET",
+  options: FetchJsonOptions = {}
+): Promise<T> {
+  const attempts = Math.max(1, options.attempts ?? (method === "GET" ? DEFAULT_CDP_HTTP_ATTEMPTS : 1));
+  const retryDelayMs = options.retryDelayMs ?? 150;
+  return retry(
+    () => fetchJsonOnce<T>(url, timeoutMs, method),
+    {
+      attempts,
+      retryDelayMs,
+      shouldRetry: (error) => method === "GET" && isTransientDevToolsHttpError(error)
+    }
+  );
+}
+
+function fetchJsonOnce<T>(
+  url: string,
+  timeoutMs: number,
+  method: "GET" | "PUT"
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     const req = http.request(url, { timeout: timeoutMs, method }, (res) => {
@@ -68,23 +96,66 @@ export function fetchJson<T>(
       res.on("data", (chunk) => (data += chunk));
       res.on("end", () => {
         if ((res.statusCode ?? 500) >= 400) {
-          reject(new Error(`HTTP ${method} ${url} returned ${res.statusCode}: ${data.slice(0, 200)}`));
+          reject(Object.assign(
+            new Error(`HTTP ${method} ${url} returned ${res.statusCode}: ${data.slice(0, 200)}`),
+            { statusCode: res.statusCode ?? 500 }
+          ));
           return;
         }
         try {
           resolve(JSON.parse(data) as T);
         } catch (err) {
-          reject(err);
+          const message = err instanceof Error ? err.message : String(err);
+          reject(new Error(`HTTP ${method} ${url} returned invalid JSON: ${message}`));
         }
       });
     });
-    req.on("error", reject);
+    req.on("error", (error) => {
+      reject(new Error(`HTTP ${method} ${url} failed: ${error.message}`, { cause: error }));
+    });
     req.on("timeout", () => {
       req.destroy();
       reject(new Error(`HTTP ${method} ${url} timed out`));
     });
     req.end();
   });
+}
+
+async function retry<T>(
+  operation: () => Promise<T>,
+  options: {
+    attempts: number;
+    retryDelayMs: number;
+    shouldRetry: (error: unknown) => boolean;
+  }
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= options.attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt === options.attempts || !options.shouldRetry(error)) throw error;
+      await delay(options.retryDelayMs * attempt);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function isTransientDevToolsHttpError(error: unknown): boolean {
+  if (isHttpStatusError(error)) return error.statusCode >= 500;
+  const message = error instanceof Error ? error.message : String(error);
+  return /timed out|ECONNRESET|ECONNREFUSED|EPIPE|socket hang up|invalid JSON/i.test(message);
+}
+
+function isHttpStatusError(error: unknown): error is HttpStatusError {
+  return error instanceof Error
+    && "statusCode" in error
+    && typeof (error as { statusCode?: unknown }).statusCode === "number";
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 export async function getWebSocketDebuggerUrl(port: number, timeoutMs = 10000): Promise<string> {
@@ -274,6 +345,7 @@ async function readActiveEndpoint(profileDir: string): Promise<ActiveDevToolsEnd
   try {
     const content = await fs.readFile(path.join(profileDir, "DevToolsActivePort"), "utf8");
     const [portText, browserPath] = content.split(/\r?\n/);
+    if (portText === undefined || browserPath === undefined) return null;
     const port = Number.parseInt(portText, 10);
     return Number.isInteger(port)
       && port > 0
@@ -382,7 +454,9 @@ export async function createDedicatedWindowTarget(port: number): Promise<ChromeT
  */
 export async function closeWindowTarget(port: number, targetId: string): Promise<void> {
   try {
-    await fetchJson(`http://127.0.0.1:${port}/json/close/${targetId}`, 5000);
+    await fetchJson(`http://127.0.0.1:${port}/json/close/${targetId}`, 5000, "GET", {
+      attempts: 1
+    });
   } catch {
     // The window may have already closed itself (e.g. the request crashed the
     // renderer); nothing further to do.
@@ -513,8 +587,8 @@ export class ChromeLauncher {
       }
       return {
         port: launchedEndpoint.port,
-        pid: this.childProcess.pid,
-        webSocketDebuggerUrl: wsUrl
+        webSocketDebuggerUrl: wsUrl,
+        ...(this.childProcess.pid === undefined ? {} : { pid: this.childProcess.pid })
       };
     } catch (error) {
       this.stop();
@@ -605,5 +679,5 @@ export async function openChatGptForManualLogin(
     stdio: "ignore"
   });
   child.unref();
-  return { pid: child.pid };
+  return child.pid === undefined ? {} : { pid: child.pid };
 }

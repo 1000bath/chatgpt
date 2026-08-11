@@ -148,12 +148,13 @@ export async function persistBrowserImages(
       );
     }
     await fs.writeFile(filePath, image.data, { flag: "wx" });
+    const alt = payloads[index]?.alt?.trim().slice(0, 300);
     artifacts.push({
       path: filePath,
       mimeType: image.mimeType,
       sizeBytes: image.data.length,
       fileName,
-      alt: payloads[index].alt?.trim().slice(0, 300) || undefined
+      ...(alt ? { alt } : {})
     });
   }
   return artifacts;
