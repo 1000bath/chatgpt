@@ -36,7 +36,7 @@ function toIsoDate(): string {
 export class HealthWatcher {
   readonly intervalMs: number;
   private readonly onReport: (report: HealthReport) => void | Promise<void>;
-  private readonly onError?: (error: unknown) => void;
+  private readonly onError: ((error: unknown) => void) | undefined;
   readonly backend: ExecutionBackend;
   private timer: NodeJS.Timeout | undefined;
   private running = false;
