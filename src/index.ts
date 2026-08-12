@@ -11,6 +11,32 @@
 export { ChatGptBrowserBackend, classifyBrowserError } from "./backend.js";
 
 export {
+  ChatGptBrowserEventEmitter,
+  type ChatGptBrowserEvent,
+  type ChatGptBrowserEventListener
+} from "./events.js";
+
+export {
+  CdpTraceRecorder,
+  defaultTraceFilePath,
+  truncateTraceDetail,
+  type CdpTraceEntry,
+  type CdpTraceSink
+} from "./trace.js";
+
+export {
+  ChatGptBrowserMetricsCollector,
+  formatChatGptBrowserMetrics,
+  type ChatGptBrowserMetrics
+} from "./metrics.js";
+
+export {
+  HealthWatcher,
+  type HealthReport,
+  type HealthWatcherOptions
+} from "./watcher.js";
+
+export {
   ChatGptBrowserError,
   serializeChatGptBrowserError,
   type ChatGptBrowserErrorCode,
@@ -125,3 +151,5 @@ export {
 export { CHATGPT_SELECTORS } from "./selectors.js";
 export { RATE_LIMIT_PATTERNS, detectRateLimit } from "./limits.js";
 export { estimateTokens } from "./tokens.js";
+
+export { createMemorySnapshot, planMemorySync, buildMemorySyncPrompt, MEMORY_SYNC_BEGIN, MEMORY_SYNC_END, MAX_MEMORY_SYNC_CHARS, type MemorySnapshot, type MemorySyncPlan } from "./memorySync.js";

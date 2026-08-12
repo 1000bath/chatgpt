@@ -9,6 +9,14 @@ export interface ChatGptBrowserConfig {
   timeoutMs?: number;
   /** Capture conversation responses from CDP Network events before using the DOM fallback. */
   streamEnabled?: boolean;
+  /**
+   * Record a CDP trace of every consult to `traceDir`. Debug aid — the trace
+   * captures commands, results, errors, and events (payloads truncated), and
+   * costs a file write per message. Off by default.
+   */
+  debug?: boolean;
+  /** Trace output directory. Defaults to `cdp-traces` next to the profile directory. */
+  traceDir?: string;
 }
 
 export interface ChromeTarget {

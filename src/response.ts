@@ -2,8 +2,10 @@ import { CHATGPT_SELECTORS } from "./selectors.js";
 import { detectRateLimit } from "./limits.js";
 import { ChatGptBrowserError } from "./errors.js";
 import type { BrowserImagePayload } from "./types.js";
+import { truncateTraceDetail, type CdpTraceEntry } from "./trace.js";
 
 interface PendingCommand {
+  method: string;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
@@ -45,10 +47,20 @@ export class CdpSession implements CdpClient {
   private messageId = 0;
   private readonly pending = new Map<number, PendingCommand>();
   private readonly eventListeners = new Set<(event: CdpEvent) => void>();
+  private traceHook: ((entry: CdpTraceEntry) => void) | undefined;
 
   onEvent(listener: (event: CdpEvent) => void): () => void {
     this.eventListeners.add(listener);
     return () => this.eventListeners.delete(listener);
+  }
+
+  /**
+   * Attaches an observer for everything crossing this session — commands,
+   * their results, errors, and events. Used by the backend's debug mode;
+   * pass `undefined` to detach.
+   */
+  setTrace(hook: ((entry: CdpTraceEntry) => void) | undefined): void {
+    this.traceHook = hook;
   }
 
   constructor(wsUrl: string) {
@@ -83,6 +95,13 @@ export class CdpSession implements CdpClient {
           };
           if (message.id === undefined) {
             if (typeof message.method === "string" && message.params && typeof message.params === "object") {
+              const detail = truncateTraceDetail(message.params);
+              this.traceHook?.({
+                ts: Date.now(),
+                kind: "event",
+                method: message.method,
+                ...(detail !== undefined ? { detail } : {})
+              });
               for (const listener of this.eventListeners) {
                 listener({ method: message.method, params: message.params });
               }
@@ -94,10 +113,26 @@ export class CdpSession implements CdpClient {
           this.pending.delete(message.id);
           clearTimeout(pending.timer);
           if (message.error) {
+            const detail = truncateTraceDetail(message.error);
+            this.traceHook?.({
+              ts: Date.now(),
+              kind: "error",
+              method: pending.method,
+              id: message.id,
+              ...(detail !== undefined ? { detail } : {})
+            });
             pending.reject(
               new Error(`CDP Error ${message.error.code ?? "unknown"}: ${message.error.message ?? "unknown"}`)
             );
           } else {
+            const detail = truncateTraceDetail(message.result);
+            this.traceHook?.({
+              ts: Date.now(),
+              kind: "result",
+              method: pending.method,
+              id: message.id,
+              ...(detail !== undefined ? { detail } : {})
+            });
             pending.resolve(message.result);
           }
         } catch {
@@ -136,11 +171,20 @@ export class CdpSession implements CdpClient {
         return;
       }
       const id = ++this.messageId;
+      const detail = truncateTraceDetail(params);
+      this.traceHook?.({
+        ts: Date.now(),
+        kind: "command",
+        method,
+        id,
+        ...(detail !== undefined ? { detail } : {})
+      });
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`CDP command ${method} timed out after ${timeoutMs}ms on ${this.ws.url}.`));
       }, timeoutMs);
       this.pending.set(id, {
+        method,
         resolve: (value) => resolve(value as T),
         reject,
         timer
@@ -572,7 +616,9 @@ export class ResponseMonitor {
   private async clearComposerAttachments(timeoutMs = 10_000): Promise<void> {
     const attachmentSelectors = JSON.stringify(CHATGPT_SELECTORS.attachment);
     const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
+    // do/while so a zero budget still gets one cheap evaluation: an already
+    // empty composer then returns clean instead of being warned about.
+    do {
       const remaining = await this.session.evaluate<number>(`
         (function() {
           const buttons = Array.from(
@@ -587,8 +633,9 @@ export class ResponseMonitor {
         })()
       `);
       if (remaining === 0) return;
+      if (Date.now() >= deadline) break;
       await delay(300);
-    }
+    } while (Date.now() < deadline);
     // Not fatal on its own: the caller's baseline still accounts for whatever is
     // left, and a stale attachment shows up as the upload timeout it already
     // reports. Say so rather than failing a consult that may still work.
@@ -604,7 +651,13 @@ export class ResponseMonitor {
     const attachmentSelectors = JSON.stringify(CHATGPT_SELECTORS.attachment);
     const encodedImages = JSON.stringify(images);
 
-    await this.clearComposerAttachments();
+    // One shared budget for the whole upload. Clearing, locating the file
+    // input, and waiting for the attachments to settle draw on it together
+    // instead of each restarting the clock: a caller asking for a 3s upload
+    // used to spend 13s because the clear phase kept its own 10s default.
+    const deadline = Date.now() + timeoutMs;
+
+    await this.clearComposerAttachments(Math.max(0, Math.min(10_000, deadline - Date.now())));
 
     const locateInputScript = `
       (function() {
@@ -633,8 +686,8 @@ export class ResponseMonitor {
       `);
     }
 
-    const inputStarted = Date.now();
-    while (!inputFound && Date.now() - inputStarted < 5_000) {
+    const inputDeadline = Math.min(Date.now() + 5_000, deadline);
+    while (!inputFound && Date.now() < inputDeadline) {
       inputFound = await this.session.evaluate<boolean>(locateInputScript);
       if (inputFound) break;
       await this.session.evaluate<boolean>(`
@@ -690,8 +743,7 @@ export class ResponseMonitor {
       throw new Error(result?.reason ?? "Failed to attach images to ChatGPT.");
     }
 
-    const started = Date.now();
-    while (Date.now() - started < timeoutMs) {
+    while (Date.now() < deadline) {
       const status = await this.session.evaluate<{
         count: number;
         busy: boolean;

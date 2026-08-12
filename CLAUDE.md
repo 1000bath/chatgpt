@@ -38,7 +38,7 @@ npx vitest run src/response.test.ts   # single file
 npx vitest src                        # watch
 ```
 
-`vitest.config.ts` sets `testTimeout: 30_000`. This is not decoration — several composer tests drive retry loops budgeted in real seconds (`clearComposerAttachments` alone spends its full 10s default against an uncooperative composer). At vitest's 5s default those tests report as hangs.
+`vitest.config.ts` sets `testTimeout: 30_000`. This is not decoration — several composer tests drive retry loops budgeted in real seconds. At vitest's 5s default those tests report as hangs.
 
 ## Key Files by Task
 
@@ -70,10 +70,6 @@ Changes made during extraction, in case behaviour needs to be compared against t
 - `runCommand` (Oracle's process helper) → `promisify(execFile)` from `node:child_process`, used only to `which` Chrome on Linux
 - `ExecutionBackend` and friends were pulled out of Oracle's `backends/backend.ts` into local `port.ts`
 - `openChatGptInOracleChrome`/`closeActiveOracleChrome` → `...InManagedChrome`/`...ManagedChrome`
-
-## Known wart
-
-`uploadImages(images, timeoutMs)` does not pass its budget down to `clearComposerAttachments()`, which uses its own 10s default. A caller asking for a 3s upload can therefore spend 13s. Inherited from Oracle; fixing it is a behaviour change, not a port fix.
 
 ## License
 

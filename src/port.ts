@@ -42,6 +42,8 @@ export interface ExecutionBackendRequest {
   previousResponseId?: string;
   /** Exact user-authorized text to save to the signed-in account's memory. */
   accountMemory?: string;
+  /** Pre-built initial/delta memory-sync prompt. Sent only when the caller's digest changed. */
+  memorySyncPrompt?: string;
   /**
    * Composer tool to engage for this turn. Backends that cannot honour it must
    * fail rather than answer without it.

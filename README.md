@@ -43,6 +43,21 @@ try {
 }
 ```
 
+### Efficient memory sync
+
+Keep Oracle as the source of truth and treat ChatGPT Saved Memory as a cache. Build a snapshot and send `memorySyncPrompt` only for an initial sync or changed digest:
+
+```typescript
+import { createMemorySnapshot, planMemorySync, buildMemorySyncPrompt } from "chatgpt";
+
+const current = createMemorySnapshot(["Prefer concise answers", "Use TypeScript"]);
+const plan = planMemorySync(previousSnapshot, current);
+const memorySyncPrompt = buildMemorySyncPrompt(plan);
+await backend.run({ ...request, ...(memorySyncPrompt ? { memorySyncPrompt } : {}) });
+```
+
+Persist `current` locally after a successful/unverified sync and reconcile with `listAccountMemories()` when needed. Do not put secrets or transient conversation details into Saved Memory.
+
 First run: launch headed, sign in to ChatGPT once. The profile directory keeps the session, so later runs attach to an already-authenticated browser.
 
 ## Features
@@ -52,6 +67,7 @@ First run: launch headed, sign in to ChatGPT once. The profile directory keeps t
 - **Composer tools** — engage Web search, Deep research, or Create image for a turn, each with a timeout floor matched to how long it actually runs
 - **Image upload & artifacts** — send images into the composer; persist generated images to a caller-owned directory with traversal and size checks
 - **Account Saved Memory** — read, write, and delete entries, with a verification step that refuses to report success on an unconfirmed save
+- **Memory delta sync** — build a hashed baseline once and send only added/removed durable memories on later updates
 - **Rate-limit & challenge detection** — classifies Cloudflare challenges and usage caps as distinct, actionable errors
 - **Diagnostics** — a doctor routine that checks Chrome, the profile, authentication, and whether the UI selectors still match
 

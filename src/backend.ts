@@ -29,6 +29,11 @@ import {
 } from "./response.js";
 import { ChatGptStreamReader } from "./stream.js";
 import { BrowserDiagnostics } from "./diagnostics.js";
+import {
+  ChatGptBrowserEventEmitter,
+  type ChatGptBrowserEvent,
+  type ChatGptBrowserEventListener
+} from "./events.js";
 import { ChatGptBrowserError } from "./errors.js";
 import { estimateTokens } from "./tokens.js";
 import {
@@ -44,6 +49,7 @@ import {
   persistBrowserImages,
   validateBrowserImage
 } from "./imageArtifacts.js";
+import { CdpTraceRecorder, defaultTraceFilePath } from "./trace.js";
 import type { BrowserImagePayload } from "./types.js";
 
 function stripInlineImageDataUrls(prompt: string): string {
@@ -67,11 +73,24 @@ export class ChatGptBrowserBackend implements ExecutionBackend {
   });
 
   private diagnostics = new BrowserDiagnostics();
+  private readonly events = new ChatGptBrowserEventEmitter();
 
   constructor(private readonly config: ChatGptBrowserConfig) {}
 
   async healthCheck(): Promise<DoctorCheck[]> {
     return this.diagnostics.runDoctor(this.config);
+  }
+
+  /**
+   * Subscribes to structured lifecycle events (see `ChatGptBrowserEvent`).
+   * Returns an unsubscribe function.
+   */
+  onEvent(listener: ChatGptBrowserEventListener): () => void {
+    return this.events.onEvent(listener);
+  }
+
+  private emit(event: ChatGptBrowserEvent): void {
+    this.events.emit(event);
   }
 
   /**
@@ -123,17 +142,44 @@ export class ChatGptBrowserBackend implements ExecutionBackend {
    * continues an existing thread (see `withConversationLock` in chrome.ts).
    */
   async run(request: ExecutionBackendRequest): Promise<ExecutionBackendResponse> {
+    const startedAt = Date.now();
     let lastError: unknown;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        return await this.runOnce(request);
+        if (attempt === 0) {
+          this.emit({
+            type: "run:started",
+            model: request.model,
+            continuation: Boolean(request.previousResponseId),
+            ...(request.tool ? { tool: request.tool } : {})
+          });
+        }
+        const response = await this.runOnce(request);
+        this.emit({
+          type: "run:completed",
+          durationMs: Date.now() - startedAt,
+          usage: response.usage
+        });
+        return response;
       } catch (error) {
         lastError = error;
         const classification = classifyBrowserError(error);
         if (classification === "permanent" || attempt === 2) {
+          this.emit({
+            type: "run:failed",
+            durationMs: Date.now() - startedAt,
+            message: error instanceof Error ? error.message : String(error),
+            ...(error instanceof ChatGptBrowserError ? { code: error.code } : {})
+          });
           throw error;
         }
         console.warn(`[chatgpt-browser] retrying attempt ${attempt + 2}/3 after ${classification} failure`);
+        this.emit({
+          type: "run:retry",
+          nextAttempt: attempt + 2,
+          classification,
+          message: error instanceof Error ? error.message : String(error)
+        });
         await delay(attempt === 0 ? 2_000 : 5_000);
       }
     }
@@ -199,9 +245,11 @@ export class ChatGptBrowserBackend implements ExecutionBackend {
     const launcher = new ChromeLauncher();
     let session: CdpSession | undefined;
     let dedicatedWindow: { port: number; id: string } | undefined;
+    let trace: CdpTraceRecorder | undefined;
 
     try {
       const processInfo = await launcher.launch(this.config);
+      this.emit({ type: "browser:launched", port: processInfo.port });
       // A dedicated window, not `findOrCreatePageTarget`'s shared tab: two
       // requests running at once must not end up typing into and reading from
       // the same tab, and a same-window tab was found live to be starved
@@ -227,11 +275,20 @@ export class ChatGptBrowserBackend implements ExecutionBackend {
 
       session = new CdpSession(target.webSocketDebuggerUrl);
       await session.connect();
+      if (this.config.debug) {
+        const traceDir = this.config.traceDir
+          ?? path.join(this.config.profileDir, "..", "cdp-traces");
+        trace = new CdpTraceRecorder(defaultTraceFilePath(traceDir));
+        session.setTrace((entry) => trace?.record(entry));
+        console.error(`[chatgpt-browser] CDP trace: ${trace.filePath}`);
+      }
 
       const monitor = new ResponseMonitor(session);
       // Freshly created by createDedicatedWindowTarget above, so it is never
       // already on the requested conversation — always navigate.
-      await monitor.navigateToChatGPT(conversationUrl ?? "https://chatgpt.com", 60_000, true);
+      const destination = conversationUrl ?? "https://chatgpt.com";
+      await monitor.navigateToChatGPT(destination, 60_000, true);
+      this.emit({ type: "navigate", url: destination });
       const authentication = await monitor.authenticationStatus();
       if (!authentication.authenticated) {
         throw new Error(
@@ -256,19 +313,30 @@ export class ChatGptBrowserBackend implements ExecutionBackend {
       let memoryInputTokens = 0;
       let memoryOutputTokens = 0;
       let memoryVerification: AccountMemoryVerification = "not-attempted";
-      if (request.accountMemory) {
-        const memoryPrompt = buildAccountMemoryPrompt(request.accountMemory);
+      const memoryPrompt = request.accountMemory ?? request.memorySyncPrompt;
+      if (memoryPrompt) {
+        this.emit({
+          type: "memory:update",
+          kind: request.accountMemory ? "save" : "sync"
+        });
+        const prompt = request.accountMemory
+          ? buildAccountMemoryPrompt(request.accountMemory)
+          : request.memorySyncPrompt!;
         await monitor.navigateToChatGPT("https://chatgpt.com", 60_000);
-        const memoryBaseline = await monitor.fillPromptAndSend(memoryPrompt);
+        const memoryBaseline = await monitor.fillPromptAndSend(prompt);
         const memoryResponse = await monitor.waitForResponse(memoryBaseline, timeoutMs);
-        memoryInputTokens = estimateTokens(memoryPrompt);
+        memoryInputTokens = estimateTokens(prompt);
         memoryOutputTokens = estimateTokens(memoryResponse);
-        if (!isAccountMemorySaveConfirmed(memoryResponse)) {
+        if (request.accountMemory && !isAccountMemorySaveConfirmed(memoryResponse)) {
           throw new ChatGptBrowserError(
             "CHATGPT_ACCOUNT_MEMORY_NOT_CONFIRMED",
             `ChatGPT did not confirm the Saved Memory update: ${memoryResponse.slice(0, 300)}`,
             "Enable Memory in ChatGPT Settings > Personalization, then retry the explicit memory request."
           );
+        }
+        if (!request.accountMemory) {
+          memoryVerification = "unverified";
+          console.warn("[account-memory] memory sync response is unverified; use listAccountMemories to reconcile.");
         }
 
         // The confirmation above is the model's own claim, and it has been
@@ -276,19 +344,21 @@ export class ChatGptBrowserBackend implements ExecutionBackend {
         // decides for itself what is worth remembering. Check the account before
         // reporting success, and treat an unreachable check as unverified rather
         // than as either outcome.
-        const check = await verifyAccountMemoryWrite(session, request.accountMemory);
-        if (check.verified) {
+        const check = request.accountMemory
+          ? await verifyAccountMemoryWrite(session, request.accountMemory)
+          : undefined;
+        if (check?.verified) {
           memoryVerification = "verified";
-        } else if (check.conclusive) {
+        } else if (check?.conclusive) {
           throw new ChatGptBrowserError(
             "CHATGPT_ACCOUNT_MEMORY_NOT_CONFIRMED",
             "ChatGPT reported the memory as saved, but the account does not contain it.",
             "ChatGPT stores only what it judges worth remembering; rephrase it as a durable fact or preference, or manage it under Settings > Personalization > Manage memories."
           );
-        } else {
+        } else if (request.accountMemory) {
           memoryVerification = "unverified";
           console.warn(
-            `[account-memory] ChatGPT reported the save but the account could not be checked (${check.reason}). Reporting it as unverified.`
+            `[account-memory] ChatGPT reported the save but the account could not be checked (${check?.reason ?? "unknown"}). Reporting it as unverified.`
           );
         }
         await monitor.navigateToChatGPT(conversationUrl ?? "https://chatgpt.com", 60_000);
@@ -326,6 +396,7 @@ export class ChatGptBrowserBackend implements ExecutionBackend {
             "ChatGPT's composer menu may have changed, or the tool may be unavailable on this account. Retry without the tool option to answer without it."
           );
         }
+        this.emit({ type: "tool:engaged", tool: request.tool });
       }
 
       if (uploadImages.length > 0) {
@@ -342,6 +413,8 @@ export class ChatGptBrowserBackend implements ExecutionBackend {
         : new ChatGptStreamReader(session);
       await streamReader?.start();
       const baseline = await monitor.fillPromptAndSend(fullPrompt);
+      this.emit({ type: "prompt:sent" });
+      const promptSentAt = Date.now();
       const domResponse = monitor.waitForResponse(baseline, timeoutMs, {
         // Deep research and image generation sit unchanged for minutes at a
         // time; the stall reload that rescues a wedged UI would throw the work
@@ -356,6 +429,7 @@ export class ChatGptBrowserBackend implements ExecutionBackend {
       const streamResponse = streamReader?.read();
       streamResponse?.catch(() => undefined);
       let text: string;
+      let answerTier: "stream" | "dom";
       let streamUsage: { promptTokens: number; completionTokens: number } | undefined;
       if (streamResponse) {
         try {
@@ -364,12 +438,14 @@ export class ChatGptBrowserBackend implements ExecutionBackend {
             domResponse.then((domText) => ({ tier: "dom" as const, text: domText, usage: undefined }))
           ]);
           text = streamed.text;
+          answerTier = streamed.tier;
           streamUsage = streamed.usage;
           if (streamed.tier === "dom") streamReader?.cancel();
           logTier(streamed.tier);
         } catch (streamError) {
           streamReader?.cancel();
           text = await domResponse;
+          answerTier = "dom";
           // Naming the failure is the whole point of the log: a silent fallback
           // reads as "the stream tier works" right up until someone deletes the
           // DOM path.
@@ -377,8 +453,14 @@ export class ChatGptBrowserBackend implements ExecutionBackend {
         }
       } else {
         text = await domResponse;
+        answerTier = "dom";
         logTier("dom", "stream disabled");
       }
+      this.emit({
+        type: "answer:received",
+        tier: answerTier,
+        durationMs: Date.now() - promptSentAt
+      });
       const responseId = await monitor.currentConversationUrl();
       const captured = await monitor.captureAssistantImages();
       const images = captured.images.length > 0
@@ -401,7 +483,7 @@ export class ChatGptBrowserBackend implements ExecutionBackend {
         ...(responseId ? { responseId } : {}),
         // Only a checked write counts as saved; an unverifiable one is reported
         // through accountMemoryVerification instead of being claimed as success.
-        ...(request.accountMemory
+        ...(request.accountMemory || request.memorySyncPrompt
           ? {
               accountMemorySaved: memoryVerification === "verified",
               accountMemoryVerification: memoryVerification
@@ -429,17 +511,32 @@ export class ChatGptBrowserBackend implements ExecutionBackend {
             { ...(err.details ?? {}), screenshotPath }
           );
         }
+        if (trace) {
+          throw new ChatGptBrowserError(
+            err.code,
+            err.message,
+            err.suggestion,
+            { ...(err.details ?? {}), tracePath: trace.filePath }
+          );
+        }
         throw err;
       }
       throw new ChatGptBrowserError(
         "CHATGPT_BROWSER_EXECUTION_FAILED",
         `ChatGPT Browser consult failed: ${err instanceof Error ? err.message : String(err)}`,
         "Check browser diagnostics or log into ChatGPT via `oracle browser setup`.",
-        classifyBrowserError(err) === "transient" ? { transient: true } : undefined
+        {
+          ...(classifyBrowserError(err) === "transient" ? { transient: true } : {}),
+          ...(screenshotPath ? { screenshotPath } : {}),
+          ...(trace ? { tracePath: trace.filePath } : {})
+        }
       );
     } finally {
       if (session) {
         session.close();
+      }
+      if (trace) {
+        await trace.close();
       }
       // Best-effort: closeWindowTarget already swallows its own failures, and
       // a request that already succeeded or failed must not become an error

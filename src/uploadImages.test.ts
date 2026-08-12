@@ -73,6 +73,15 @@ describe("uploadImages", () => {
     expect(injectedCount()).toBe(1);
   });
 
+  test("spends no more than the caller's budget on an uncooperative composer", async () => {
+    // Regression: the clear phase used to keep its own 10s default regardless
+    // of the requested budget, so a 2s upload spent ~12s before failing.
+    const { session } = fakeComposer({ leftover: 1, clearable: false });
+    const started = Date.now();
+    await new ResponseMonitor(session).uploadImages(IMAGES, 2_000).catch(() => undefined);
+    expect(Date.now() - started).toBeLessThan(6_000);
+  });
+
   test("does nothing when there are no images", async () => {
     const { session, injectedCount } = fakeComposer({ leftover: 0 });
     await new ResponseMonitor(session).uploadImages([], 3_000);
