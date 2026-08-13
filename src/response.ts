@@ -275,18 +275,36 @@ export class ResponseMonitor {
     }
 
     const selectors = JSON.stringify(CHATGPT_SELECTORS.promptInput);
+    const challengeSelectors = JSON.stringify(CHATGPT_SELECTORS.cloudflareChallenge);
     const started = Date.now();
+    // A challenge is reported only after it survives two polls, matching
+    // `waitForCompletion`: the interstitial can flash by while the real page
+    // loads, and failing on that would be worse than waiting another 500ms.
+    let challengePolls = 0;
     while (Date.now() - started < timeoutMs) {
-      const state = await this.session.evaluate<{ ready: boolean; url: string }>(`
+      const state = await this.session.evaluate<{ ready: boolean; url: string; challenge?: boolean }>(`
         (function() {
           const selectors = ${selectors};
+          const challengeSelectors = ${challengeSelectors};
           return {
             ready: document.readyState !== "loading"
               && selectors.some((selector) => Boolean(document.querySelector(selector))),
+            challenge: challengeSelectors.some((selector) => Boolean(document.querySelector(selector))),
             url: window.location.href
           };
         })()
       `);
+
+      // Without this the timeout below blames sign-in for a challenge, which
+      // sends the user to log in on a page that never shows them a form.
+      challengePolls = state.challenge ? challengePolls + 1 : 0;
+      if (challengePolls >= 2) {
+        throw new ChatGptBrowserError(
+          "CHATGPT_BROWSER_CHALLENGE_REQUIRED",
+          "Cloudflare challenge detected before the composer loaded. Complete the challenge in the open Chrome window and re-run.",
+          "Complete the challenge in the open Chrome window, then re-run. `chatgpt login` opens Chrome without a debugger port, which is far less likely to be challenged."
+        );
+      }
       const currentConversationUrl = normalizeChatGptConversationUrl(state.url);
       const location = (() => {
         try {

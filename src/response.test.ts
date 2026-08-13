@@ -163,6 +163,46 @@ describe("ResponseMonitor", () => {
     }
   });
 
+  test("names the Cloudflare challenge instead of blaming sign-in for it", async () => {
+    vi.useFakeTimers();
+    try {
+      // The interstitial has no composer, so the login-guidance path would
+      // otherwise claim the account is signed out and send the user to a form
+      // the challenge never lets them reach.
+      const client = fakeClient([
+        { ready: false, challenge: true, url: "https://chatgpt.com" },
+        { ready: false, challenge: true, url: "https://chatgpt.com" }
+      ]);
+      const monitor = new ResponseMonitor(client);
+      const promise = monitor.navigateToChatGPT(5_000);
+      const assertion = expect(promise).rejects.toMatchObject({
+        code: "CHATGPT_BROWSER_CHALLENGE_REQUIRED"
+      });
+      await vi.advanceTimersByTimeAsync(1_500);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("does not call a single challenge poll a challenge", async () => {
+    vi.useFakeTimers();
+    try {
+      // One frame of the interstitial while the real page loads is normal.
+      const client = fakeClient([
+        { ready: false, challenge: true, url: "https://chatgpt.com" },
+        { ready: false, challenge: false, url: "https://chatgpt.com" },
+        { ready: true, challenge: false, url: "https://chatgpt.com/" }
+      ]);
+      const monitor = new ResponseMonitor(client);
+      const promise = monitor.navigateToChatGPT("https://chatgpt.com", 5_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(promise).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("can wait on an already-open conversation without reloading it", async () => {
     const client = fakeClient([{
       ready: true,

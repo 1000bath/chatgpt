@@ -12,3 +12,6 @@ coverage/
 Thumbs.db
 # Local CodeGraph index (regenerable, machine-specific)
 .codegraph/
+
+# runtime diagnostic captures
+diagnostics/

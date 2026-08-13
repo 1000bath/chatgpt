@@ -58,7 +58,7 @@ describe("CdpTraceRecorder", () => {
 describe("defaultTraceFilePath", () => {
   test("lays the file under the given directory with a pid and timestamp", () => {
     const filePath = defaultTraceFilePath("target/traces");
-    expect(filePath.startsWith("target/traces/cdp-trace-")).toBe(true);
+    expect(filePath.startsWith(path.join("target/traces", "cdp-trace-"))).toBe(true);
     expect(filePath.endsWith(`-${process.pid}.jsonl`)).toBe(true);
   });
 });
