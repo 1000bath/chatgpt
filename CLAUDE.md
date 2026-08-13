@@ -23,6 +23,7 @@ Layered bottom-up; each layer is usable on its own:
 3. **`stream.ts`** — parses SSE frames off CDP `Network` events so tokens arrive as ChatGPT emits them, instead of polling the DOM.
 4. **`selectors.ts`** — every CSS selector the page depends on, as ordered fallback lists. **This is the file that breaks when ChatGPT ships a UI change.**
 5. **`backend.ts`** — `ChatGptBrowserBackend`, the turn-taking policy on top: platform/enablement gates, retries, error classification, account-memory verification, artifact persistence. Implements `ExecutionBackend`.
+6. **`cli.ts`** — the `chatgpt` binary (`login`, `doctor`, `ask`, `memory`, `close`). A thin shell over the backend: it owns argument parsing, stdout/stderr separation, and exit codes, and no automation policy. `login` deliberately routes through `openChatGptForManualLogin` rather than the launcher, because Chrome started *with* a debugger port reliably draws a Cloudflare challenge on a fresh profile.
 
 Supporting: `accountMemory.ts` (prompt construction + reply parsing), `accountMemoryApi.ts` (read-back and write verification), `imageArtifacts.ts` (validation + safe persistence), `diagnostics.ts` (doctor checks), `limits.ts` (rate-limit patterns), `port.ts` (the host-neutral contract), `errors.ts`, `tokens.ts`.
 
@@ -49,6 +50,7 @@ npx vitest src                        # watch
 - **Composer tool behaviour** → `src/backend.ts` + `COMPOSER_TOOL_*` in `src/types.ts`, `src/composerTool.test.ts`
 - **Saved Memory** → `src/accountMemory.ts` (prompts/markers), `src/accountMemoryApi.ts` (verification)
 - **Add an error code** → `src/errors.ts` (`ChatGptBrowserErrorCode` union)
+- **CLI command / flag** → `src/cli.ts` (`USAGE` and the `switch` in `main`), then `README.md`
 
 ## Invariants worth preserving
 

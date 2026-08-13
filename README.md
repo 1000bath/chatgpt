@@ -7,7 +7,7 @@ Where `dek-gateway` talks to model APIs, this package talks to the ChatGPT produ
 ## Quick Start
 
 ```bash
-npm install chatgpt
+npm install bunraku
 ```
 
 ```typescript
@@ -15,7 +15,7 @@ import {
   ChatGptBrowserBackend,
   ChatGptBrowserError,
   serializeChatGptBrowserError
-} from "chatgpt";
+} from "bunraku";
 
 const backend = new ChatGptBrowserBackend({
   profileDir: "/path/to/dedicated-chrome-profile",
@@ -43,12 +43,38 @@ try {
 }
 ```
 
+## CLI
+
+The package ships a `bunraku` command for the same flow without writing code:
+
+```bash
+bunraku login                      # sign in once per profile (see below)
+bunraku doctor                     # platform, Chrome, profile, selectors, sign-in
+bunraku ask "explain the CDP handshake in three sentences"
+git diff | bunraku ask - --system "You review diffs."
+bunraku ask "a fox in the snow" --tool create-image --artifacts ./out
+bunraku memory                     # list the account's saved memories
+bunraku close                      # close the managed Chrome
+```
+
+The answer goes to stdout and everything else to stderr, so `bunraku ask ... > answer.md`
+captures only the response. `--json` emits the full result object instead.
+
+`--profile <dir>` selects the Chrome user-data directory, defaulting to
+`$CHATGPT_PROFILE_DIR` and then `~/.chatgpt-cli/profile`.
+
+**Run `bunraku login` first.** It opens Chrome *without* a debugger port, which
+matters: a fresh profile driven over CDP is routinely met with a Cloudflare
+"Verify you are human" interstitial and never reaches the sign-in form. Clear
+the challenge and sign in there once; the profile keeps both the Cloudflare
+clearance and the session, and later runs attach to it.
+
 ### Efficient memory sync
 
 Keep Oracle as the source of truth and treat ChatGPT Saved Memory as a cache. Build a snapshot and send `memorySyncPrompt` only for an initial sync or changed digest:
 
 ```typescript
-import { createMemorySnapshot, planMemorySync, buildMemorySyncPrompt } from "chatgpt";
+import { createMemorySnapshot, planMemorySync, buildMemorySyncPrompt } from "bunraku";
 
 const current = createMemorySnapshot(["Prefer concise answers", "Use TypeScript"]);
 const plan = planMemorySync(previousSnapshot, current);
